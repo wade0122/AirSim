@@ -38,6 +38,7 @@ namespace airlib
         {
             /*********** required parameters ***********/
             uint rotor_count;
+            uint arm_count;
             vector<RotorPose> rotor_poses;
             real_T mass;
             Matrix3x3r inertia;
@@ -273,6 +274,49 @@ namespace airlib
                 throw std::invalid_argument("Rotor count other than 8 is not supported by this method!");
         }
 
+        
+        static void initializeRotorOctoCoax(vector<RotorPose>& rotor_poses /* the result we are building */,
+            uint rotor_count /* must be 8 */,
+            uint arm_count /* must be 4 */,
+            real_T arm_length,
+            real_T rotor_z /* z relative to center of gravity */)
+        {
+            Vector3r unit_z(0, 0, -1);  //NED frame
+            if (rotor_count == 8 && arm_count == 4) {
+                rotor_poses.clear();
+
+                // vectors below are rotated according to NED left hand rule (so the vectors are rotated counter clockwise).
+                Quaternionr octo_rot(AngleAxisr(M_PIf / 4, unit_z));
+                rotor_poses.emplace_back(VectorMath::rotateVector(Vector3r(0, arm_length, rotor_z), octo_rot, true),
+                                         unit_z,
+                                         RotorTurningDirection::RotorTurningDirectionCCW);
+                rotor_poses.emplace_back(VectorMath::rotateVector(Vector3r(0, -arm_length, rotor_z), octo_rot, true),
+                                         unit_z,
+                                         RotorTurningDirection::RotorTurningDirectionCCW);
+                rotor_poses.emplace_back(VectorMath::rotateVector(Vector3r(arm_length, 0, rotor_z), octo_rot, true),
+                                         unit_z,
+                                         RotorTurningDirection::RotorTurningDirectionCW);
+                rotor_poses.emplace_back(VectorMath::rotateVector(Vector3r(-arm_length, 0, rotor_z), octo_rot, true),
+                                         unit_z,
+                                         RotorTurningDirection::RotorTurningDirectionCW);
+
+                rotor_poses.emplace_back(VectorMath::rotateVector(Vector3r(0, arm_length, -rotor_z), octo_rot, true),
+                                         unit_z,
+                                         RotorTurningDirection::RotorTurningDirectionCW);
+                rotor_poses.emplace_back(VectorMath::rotateVector(Vector3r(0, -arm_length, -rotor_z), octo_rot, true),
+                                         unit_z,
+                                         RotorTurningDirection::RotorTurningDirectionCW);
+                rotor_poses.emplace_back(VectorMath::rotateVector(Vector3r(arm_length, 0, -rotor_z), octo_rot, true),
+                                         unit_z,
+                                         RotorTurningDirection::RotorTurningDirectionCCW);
+                rotor_poses.emplace_back(VectorMath::rotateVector(Vector3r(-arm_length, 0, -rotor_z), octo_rot, true),
+                                         unit_z,
+                                         RotorTurningDirection::RotorTurningDirectionCCW);
+            }
+            else
+                throw std::invalid_argument("Rotor count other than 8 is not supported by this method!");
+        }
+
         /// Initialize the rotor_poses given the rotor_count, the arm lengths and the arm angles (relative to forwards vector).
         /// Also provide the direction you want to spin each rotor and the z-offset of the rotors relative to the center of gravity.
         static void initializeRotors(vector<RotorPose>& rotor_poses, uint rotor_count, real_T arm_lengths[], real_T arm_angles[], RotorTurningDirection rotor_directions[], real_T rotor_z /* z relative to center of gravity */)
@@ -403,6 +447,89 @@ namespace airlib
 
             //computer rotor poses
             initializeRotorOctoX(params.rotor_poses, params.rotor_count, arm_lengths.data(), rotor_z);
+
+            //compute inertia matrix
+            computeInertiaMatrix(params.inertia, params.body_box, params.rotor_poses, box_mass, motor_assembly_weight);
+        }
+
+        void setupFrameGenericSKMX300C8(Params& params)
+        {
+            params.rotor_count = 8;
+            params.arm_count = 4;
+            real_T arm_length = 0.15f;
+
+            params.mass = 1.8f;
+
+            real_T motor_assembly_weight = 0.037f; //weight for 0720 motor
+            real_T box_mass = params.mass - params.rotor_count * motor_assembly_weight;
+
+            // using rotor_param default, but if you want to change any of the rotor_params, call calculateMaxThrust() to recompute the max_thrust
+            // given new thrust coefficients, motor max_rpm and propeller diameter.
+            params.rotor_params.propeller_diameter = 0.1486056f; //diameter in meters, 58545, D: 5.85, H: 0.45;
+            params.rotor_params.propeller_height = 0.0114f; //height of cylindrical area when propeller rotates, in meters
+            params.rotor_params.control_signal_filter_tc = 0.005f; //time constant for low pass filter
+
+            //params.rotor_params.calculateMaxThrust();
+            params.rotor_params.max_rpm = 25617.0f; // revolutions per minute
+            params.rotor_params.revolutions_per_second = params.rotor_params.max_rpm / 60;
+            params.rotor_params.max_speed = params.rotor_params.revolutions_per_second * 2 * M_PIf; // radians / sec
+            params.rotor_params.max_speed_square = pow(params.rotor_params.max_speed, 2.0f);
+            params.rotor_params.max_thrust = 15.0f; //computed from above formula for the given constants
+            params.rotor_params.max_torque = 0.3f; //computed from above formula, max_thrust * 2 * torque_coef
+
+            //set up dimensions of core body box or abdomen (not including arms).
+            params.body_box.x() = 0.180f;
+            params.body_box.y() = 0.11f;
+            params.body_box.z() = 0.40f;
+            real_T rotor_z = 30.0f / 1000;
+
+            //computer rotor poses
+            initializeRotorOctoCoax(params.rotor_poses, params.rotor_count, params.arm_count, arm_length, rotor_z);
+            
+            //compute inertia matrix
+            computeInertiaMatrix(params.inertia, params.body_box, params.rotor_poses, box_mass, motor_assembly_weight);
+        }
+
+        void setupFrameGenericSKMMini(Params& params)
+        {
+            //set up arm lengths
+            //dimensions are for F450 frame: http://artofcircuits.com/product/quadcopter-frame-hj450-with-power-distribution
+            params.rotor_count = 4;
+            std::vector<real_T> arm_lengths(params.rotor_count, 0.0575f);
+
+            //set up mass
+            //this has to be between max_thrust*rotor_count/10 (1.6kg using default parameters in RotorParams.hpp) and (idle throttle percentage)*max_thrust*rotor_count/10 (0.8kg using default parameters and SimpleFlight)
+            //any value above the maximum would result in the motors not being able to lift the body even at max thrust,
+            //and any value below the minimum would cause the drone to fly upwards on idling throttle (50% of the max throttle if using SimpleFlight)
+            //Note that the default idle throttle percentage is 50% if you are using SimpleFlight
+            params.mass = 0.065f;
+
+            real_T motor_assembly_weight = 0.005f; //weight for 0720 motor
+            real_T box_mass = params.mass - params.rotor_count * motor_assembly_weight;
+
+            // using rotor_param default, but if you want to change any of the rotor_params, call calculateMaxThrust() to recompute the max_thrust
+            // given new thrust coefficients, motor max_rpm and propeller diameter.
+            params.rotor_params.propeller_diameter = 0.056f; //diameter in meters
+	        params.rotor_params.propeller_height = 2.6f / 1000.0f; //height of cylindrical area when propeller rotates, in meters
+            params.rotor_params.control_signal_filter_tc = 0.005f; //time constant for low pass filter
+
+            //params.rotor_params.calculateMaxThrust();
+            params.rotor_params.max_rpm = 5000.0f; // revolutions per minute
+            params.rotor_params.revolutions_per_second = params.rotor_params.max_rpm / 60;
+            params.rotor_params.max_speed = params.rotor_params.revolutions_per_second * 2 * M_PIf; // radians / sec
+            params.rotor_params.max_speed_square = pow(params.rotor_params.max_speed, 2.0f);
+            params.rotor_params.max_thrust =0.3f; //computed from above formula for the given constants
+            params.rotor_params.max_torque = 0.006f; //computed from above formula, max_thrust * 2 * torque_coef
+            
+
+            //set up dimensions of core body box or abdomen (not including arms).
+            params.body_box.x() = 0.035f;
+            params.body_box.y() = 0.035f;
+            params.body_box.z() = 0.040f;
+            real_T rotor_z = 25.0f / 1000;
+
+            //computer rotor poses
+            initializeRotorQuadX(params.rotor_poses, params.rotor_count, arm_lengths.data(), rotor_z);
 
             //compute inertia matrix
             computeInertiaMatrix(params.inertia, params.body_box, params.rotor_poses, box_mass, motor_assembly_weight);

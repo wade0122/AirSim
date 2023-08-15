@@ -31,6 +31,7 @@ namespace airlib
         static constexpr char const* kVehicleTypePX4 = "px4multirotor";
         static constexpr char const* kVehicleTypeArduCopterSolo = "arducoptersolo";
         static constexpr char const* kVehicleTypeSimpleFlight = "simpleflight";
+        static constexpr char const* kVehicleTypeSkyMagicFlightController = "skymagicflightcontroller";
         static constexpr char const* kVehicleTypeArduCopter = "arducopter";
         static constexpr char const* kVehicleTypePhysXCar = "physxcar";
         static constexpr char const* kVehicleTypeArduRover = "ardurover";
@@ -287,6 +288,66 @@ namespace airlib
                 : vehicle_name(vehicle_name_val), vehicle_type(vehicle_type_val)
             {
             }
+        };
+        
+        struct SkyMagicVehiclConnectInfo
+        {
+            /* Default values are requires so uninitialized instance doesn't have random values */
+
+            bool use_serial = true; // false means use UDP or TCP instead
+
+            //Used to connect via HITL: needed only if use_serial = true
+            std::string serial_port = "*";
+            int baud_rate = 115200;
+
+            // Used to connect to drone over UDP: needed only if use_serial = false and use_tcp == false
+            std::string udp_address = "127.0.0.1";
+            int udp_port = 14560;
+
+            // Used to accept connections from drone over TCP: needed only if use_tcp = true
+            bool lock_step = true;
+            bool use_tcp = false;
+            int tcp_port = 4560;
+
+            // The PX4 SITL app requires receiving drone commands over a different mavlink channel called
+            // the "ground control station" (or GCS) channel.
+            std::string control_ip_address = "127.0.0.1";
+            int control_port_local = 14540;
+            int control_port_remote = 14580;
+
+            // The log viewer can be on a different machine, so you can configure it's ip address and port here.
+            int logviewer_ip_port = 14388;
+            int logviewer_ip_sport = 14389; // for logging all messages we send to the vehicle.
+            std::string logviewer_ip_address = "";
+
+            // The QGroundControl app can be on a different machine, and AirSim can act as a proxy to forward
+            // the mavlink stream over to that machine if you configure it's ip address and port here.
+            int qgc_ip_port = 0;
+            std::string qgc_ip_address = "";
+
+            // mavlink vehicle identifiers
+            uint8_t sim_sysid = 142;
+            int sim_compid = 42;
+            uint8_t offboard_sysid = 134;
+            int offboard_compid = 1;
+            uint8_t vehicle_sysid = 135;
+            int vehicle_compid = 1;
+
+            // if you want to select a specific local network adapter so you can reach certain remote machines (e.g. wifi versus ethernet)
+            // then you will want to change the LocalHostIp accordingly.  This default only works when log viewer and QGC are also on the
+            // same machine.  Whatever network you choose it has to be the same one for external
+            std::string local_host_ip = "127.0.0.1";
+
+            std::string model = "SKMMini";
+
+            std::map<std::string, float> params;
+            std::string logs;
+        };
+
+        // for SkyMagic
+        struct SkyMagicVehicleSetting : public VehicleSetting
+        {
+            SkyMagicVehiclConnectInfo connection_info;
         };
 
         struct MavLinkConnectionInfo
@@ -803,6 +864,73 @@ namespace airlib
             return vehicle_setting_p;
         }
 
+        static std::unique_ptr<VehicleSetting> createSkymaigicVehicleSetting(const Settings& settings_json)
+        {
+            //these settings_json are expected in same section, not in another child
+            std::unique_ptr<VehicleSetting> vehicle_setting_p = std::unique_ptr<VehicleSetting>(new SkyMagicVehicleSetting());
+            SkyMagicVehicleSetting* vehicle_setting = static_cast<SkyMagicVehicleSetting*>(vehicle_setting_p.get());
+
+            //TODO: we should be selecting remote if available else keyboard
+            //currently keyboard is not supported so use rc as default
+            vehicle_setting->rc.remote_control_id = 0;
+
+            SkyMagicVehiclConnectInfo& connection_info = vehicle_setting->connection_info;
+            connection_info.sim_sysid = static_cast<uint8_t>(settings_json.getInt("SimSysID", connection_info.sim_sysid));
+            connection_info.sim_compid = settings_json.getInt("SimCompID", connection_info.sim_compid);
+
+            connection_info.vehicle_sysid = static_cast<uint8_t>(settings_json.getInt("VehicleSysID", connection_info.vehicle_sysid));
+            connection_info.vehicle_compid = settings_json.getInt("VehicleCompID", connection_info.vehicle_compid);
+
+            connection_info.offboard_sysid = static_cast<uint8_t>(settings_json.getInt("OffboardSysID", connection_info.offboard_sysid));
+            connection_info.offboard_compid = settings_json.getInt("OffboardCompID", connection_info.offboard_compid);
+
+            connection_info.logviewer_ip_address = settings_json.getString("LogViewerHostIp", connection_info.logviewer_ip_address);
+            connection_info.logviewer_ip_port = settings_json.getInt("LogViewerPort", connection_info.logviewer_ip_port);
+            connection_info.logviewer_ip_sport = settings_json.getInt("LogViewerSendPort", connection_info.logviewer_ip_sport);
+
+            connection_info.qgc_ip_address = settings_json.getString("QgcHostIp", connection_info.qgc_ip_address);
+            connection_info.qgc_ip_port = settings_json.getInt("QgcPort", connection_info.qgc_ip_port);
+
+            connection_info.control_ip_address = settings_json.getString("ControlIp", connection_info.control_ip_address);
+            connection_info.control_port_local = settings_json.getInt("ControlPort", connection_info.control_port_local); // legacy
+            connection_info.control_port_local = settings_json.getInt("ControlPortLocal", connection_info.control_port_local);
+            connection_info.control_port_remote = settings_json.getInt("ControlPortRemote", connection_info.control_port_remote);
+
+            std::string sitlip = settings_json.getString("SitlIp", connection_info.control_ip_address);
+            if (sitlip.size() > 0 && connection_info.control_ip_address.size() == 0) {
+                // backwards compat
+                connection_info.control_ip_address = sitlip;
+            }
+            if (settings_json.hasKey("SitlPort")) {
+                // backwards compat
+                connection_info.control_port_local = settings_json.getInt("SitlPort", connection_info.control_port_local);
+            }
+
+            connection_info.local_host_ip = settings_json.getString("LocalHostIp", connection_info.local_host_ip);
+
+            connection_info.use_serial = settings_json.getBool("UseSerial", connection_info.use_serial);
+            connection_info.udp_address = settings_json.getString("UdpIp", connection_info.udp_address);
+            connection_info.udp_port = settings_json.getInt("UdpPort", connection_info.udp_port);
+            connection_info.use_tcp = settings_json.getBool("UseTcp", connection_info.use_tcp);
+            connection_info.lock_step = settings_json.getBool("LockStep", connection_info.lock_step);
+            connection_info.tcp_port = settings_json.getInt("TcpPort", connection_info.tcp_port);
+            connection_info.serial_port = settings_json.getString("SerialPort", connection_info.serial_port);
+            connection_info.baud_rate = settings_json.getInt("SerialBaudRate", connection_info.baud_rate);
+            connection_info.model = settings_json.getString("Model", connection_info.model);
+            connection_info.logs = settings_json.getString("Logs", connection_info.logs);
+
+            Settings params;
+            if (settings_json.getChild("Parameters", params)) {
+                std::vector<std::string> keys;
+                params.getChildNames(keys);
+                for (auto key : keys) {
+                    connection_info.params[key] = params.getFloat(key, 0);
+                }
+            }
+
+            return vehicle_setting_p;
+        }
+
         static std::unique_ptr<VehicleSetting> createVehicleSetting(const std::string& simmode_name, const Settings& settings_json,
                                                                     const std::string vehicle_name,
                                                                     std::map<std::string, std::shared_ptr<SensorSetting>>& sensor_defaults,
@@ -813,6 +941,9 @@ namespace airlib
             std::unique_ptr<VehicleSetting> vehicle_setting;
             if (vehicle_type == kVehicleTypePX4 || vehicle_type == kVehicleTypeArduCopterSolo || vehicle_type == kVehicleTypeArduCopter || vehicle_type == kVehicleTypeArduRover)
                 vehicle_setting = createMavLinkVehicleSetting(settings_json);
+            else if (vehicle_type == kVehicleTypeSkyMagicFlightController) {
+                vehicle_setting = createSkymaigicVehicleSetting(settings_json);
+            }
             //for everything else we don't need derived class yet
             else {
                 vehicle_setting = std::unique_ptr<VehicleSetting>(new VehicleSetting());

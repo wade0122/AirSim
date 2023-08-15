@@ -420,6 +420,12 @@
     <ClInclude Include="include\vehicles\multirotor\firmwares\simple_flight\SimpleFlightQuadXParams.hpp">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="include\vehicles\multirotor\firmwares\skymagic_flight_controller\SkyMagicFlightControllerApi.hpp">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="include\vehicles\multirotor\firmwares\skymagic_flight_controller\SkyMagicFlightControllerParams.hpp">
+      <Filter>Header Files</Filter>
+    </ClInclude>
     <ClInclude Include="include\api\RpcLibClientBase.hpp">
       <Filter>Header Files</Filter>
     </ClInclude>
