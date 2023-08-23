@@ -40,13 +40,14 @@ namespace airlib
         {
             sensors_ = &getSensors();
             if (connection_info_.model == "SKMX300C8") {
-                 actuator_upper_limit_ = 2047.0F;
-                 actuator_lower_limit_ = 0.0f;
+                // init parameters
+                 //actuator_upper_limit_ = 2047.0F;
+                 //actuator_lower_limit_ = 0.0f;
             }
             else {
                 // TYMini
-                actuator_upper_limit_ = 300.0F;
-                actuator_lower_limit_ = 0.0f;
+                //actuator_upper_limit_ = 300.0F;
+                //actuator_lower_limit_ = 0.0f;
             }
         }
 
@@ -325,7 +326,9 @@ namespace airlib
         void tx_thread()
         {
             while (!is_close_) {
-                sendKinematics();
+                //sendKinematics();
+                sendSensors();
+                std::this_thread::sleep_for(std::chrono::microseconds(200));
             }
         }
         void rx_thread()
@@ -379,12 +382,11 @@ namespace airlib
         void recvRotorControl()
         {
             SITLRotorControlMessage srcm;
-            int recv_ret = udp_socket_->recv(&srcm, sizeof(srcm), 1);
+            int recv_ret = udp_socket_->recv(&srcm, sizeof(srcm), 5);
             if (recv_ret == sizeof(srcm)) {
-                for (auto i = 0; i < kTyFlightControllerRotorControlCount; ++i) {
-                    motor_ctrl_.pwm[i] = srcm.pwm[i];
+                for (size_t i = 0; i < Utils::length(rotor_controls_); ++i) {
+                    rotor_controls_[i] = ((float)srcm.pwm[i]) / srcm.scale;
                 }
-                normalizeRotorControls();
             }
             else {
                 if (recv_ret <= 0) {
@@ -397,11 +399,55 @@ namespace airlib
             }
         }
 
-        virtual void normalizeRotorControls()
+        void sendSensors()
         {
-            for (size_t i = 0; i < Utils::length(rotor_controls_); ++i) {
-                rotor_controls_[i] = (motor_ctrl_.pwm[i]) / (actuator_upper_limit_ - actuator_lower_limit_);
+            int i;
+            auto now = clock()->nowNanos() / 1000;
+            if (last_send_time_ + 2000 < now) {
+                last_send_time_ = now;
+                const auto& imu_output = getImuData("");
+                const auto& gps_output = getGpsData("");
+                const auto& baro_output = getBarometerData("");
+                const auto& mag_output = getMagnetometerData("");
+                SITLSensorsMessage ssm;
+                
+                ssm.acc.timestamp = last_send_time_;
+                ssm.acc.scale = 1000000;
+                for (i = 0; i < 3; i++) {
+                    ssm.acc.val[i] = imu_output.linear_acceleration[i] * ssm.acc.scale;
+                }
+                
+                ssm.gyro.timestamp = last_send_time_;//imu_output.time_stamp;
+                ssm.gyro.scale = 1000000;
+                for (i = 0; i < 3; i++) {
+                    ssm.gyro.val[i] = imu_output.angular_velocity[i] * ssm.gyro.scale;
+                }
+
+                ssm.mag.timestamp = mag_output.time_stamp;
+                ssm.mag.scale = 1000000;
+                for (i = 0; i < 3; i++) {
+                    ssm.mag.val[i] = mag_output.magnetic_field_body[i] * ssm.mag.scale;
+                }
+                
+                ssm.baro.timestamp = last_send_time_;
+                ssm.baro.scale = 1000000;
+                ssm.baro.val = baro_output.altitude * ssm.baro.scale;
+
+                ssm.gps.timestamp = last_send_time_;//gps_output.time_stamp;
+                ssm.gps.lat = (float)gps_output.gnss.geo_point.latitude * 1e+7;
+                ssm.gps.lon = (float)gps_output.gnss.geo_point.longitude * 1e+7;
+                ssm.gps.alt = (float)gps_output.gnss.geo_point.altitude * 1e+3;
+                ssm.gps.eph = gps_output.gnss.eph;
+                ssm.gps.epv = gps_output.gnss.epv;
+                for (i = 0; i < 3; i++) {
+                    ssm.gps.vel_ned[i] = gps_output.gnss.velocity[i];
+                }
+                ssm.gps.vel_ned_valid = gps_output.is_valid;
+                ssm.gps.satellites_used = 32;
+                ssm.gps.fix_type = gps_output.gnss.fix_type;
+                udp_socket_->sendto(&ssm, sizeof(ssm), ip_, port_);
             }
+
         }
 
         void sendKinematics()
@@ -411,7 +457,7 @@ namespace airlib
             auto now = clock()->nowNanos() / 1000;
             if (last_sendKinematics_time_ + 2000 < now) {
                 last_sendKinematics_time_ = now;
-                skm.timestamp = (uint32_t) (last_sendKinematics_time_);
+                skm.timestamp = (uint64_t) (last_sendKinematics_time_);
                 skm.ned_pos[0] = kinematics_->pose.position.x();
                 skm.ned_pos[1] = kinematics_->pose.position.y();
                 skm.ned_pos[2] = kinematics_->pose.position.z();
@@ -425,10 +471,9 @@ namespace airlib
                 skm.pqr[0] = kinematics_->twist.angular.x();
                 skm.pqr[1] = kinematics_->twist.angular.y();
                 skm.pqr[2] = kinematics_->twist.angular.z();
-                skm.serial = ++send_serial_;
                 udp_socket_->sendto(&skm, sizeof(skm), ip_, port_);
             }
-            std::this_thread::sleep_for(std::chrono::microseconds(1000));
+            //std::this_thread::sleep_for(std::chrono::microseconds(1000));
             
         }
 
@@ -444,24 +489,88 @@ namespace airlib
             // this is the packet sent by the simulator
             // to the flight controller to update the simulator state
             // All values are little-endian
-            uint32_t timestamp; //Timestamp (ms)
+            uint64_t timestamp; //Timestamp (us)
             float ned_pos[3]; //position (m)£¬>=100Hz
             float ned_vel[3]; //NED velocity (m/s)£¬>=100Hz
             float ned_acc[3]; //NED acceleration (m*m/s)£¬>=100Hz
             float rpy[3]; //Angles, attitude (rad)£¬>=500Hz
             float pqr[3]; //Angular velocity (rad/s)£¬>=500Hz
             float quat[4]; //Quaternion£¬>=500Hz
-            uint32_t serial;
         };
 #ifndef __linux__
 #pragma pack(pop)
 #endif
-        static const int kTyFlightControllerRotorControlCount = 8;
 
-        struct SITLRotorControlMessage
+#ifdef __linux__
+        struct __attribute__((__packed__)) SITLSensorsMessage
         {
-            uint16_t pwm[kTyFlightControllerRotorControlCount];
+#else
+#pragma pack(push, 1)
+        struct SITLSensorsMessage
+        {
+#endif
+            // this is the packet sent by the simulator
+            // to the flight controller to update the simulator state
+            // All values are little-endian
+            struct
+            {
+                uint64_t timestamp; // timestamp
+                int32_t val[3];
+                int32_t scale;
+            } gyro;
+
+            struct
+            {
+                uint64_t timestamp; // timestamp
+                int32_t val[3];
+                int32_t scale;
+            } acc;
+
+            struct
+            {
+                uint64_t timestamp; // timestamp
+                int32_t val[3];
+                int32_t scale;
+            } mag;
+
+            struct
+            {
+                uint64_t timestamp;
+                int32_t val;
+                int32_t scale;
+            } baro;
+            struct
+            {
+                uint64_t timestamp;
+                int32_t lat, lon, alt;
+                float eph, epv;
+                float vel_ned[3];
+                uint8_t vel_ned_valid;
+                uint8_t satellites_used;
+                uint8_t fix_type;
+                int8_t temperature;
+            } gps;
         };
+#ifndef __linux__
+#pragma pack(pop)
+#endif
+
+        static const int kTyFlightControllerRotorControlCount = 8;
+#ifdef __linux__
+        struct __attribute__((__packed__)) SITLRotorControlMessage
+        {
+#else
+#pragma pack(push, 1)
+        struct SITLRotorControlMessage
+#endif
+        {
+            uint64_t timestamp; //Timestamp (us)
+            int32_t scale;
+            int16_t pwm[kTyFlightControllerRotorControlCount];
+        };
+#ifndef __linux__
+#pragma pack(pop)
+#endif
 
 
         std::unique_ptr<mavlinkcom::UdpSocket> udp_socket_;
@@ -482,13 +591,12 @@ namespace airlib
         bool is_ready_ = false;
         bool is_close_ = true;
         uint64_t last_sendKinematics_time_ = 0;
+        uint64_t last_send_time_ = 0;
 
         std::thread tx_thread_;
         std::thread rx_thread_;
 
-        float actuator_upper_limit_ = 300.0f;
-        float actuator_lower_limit_ = 25.0f;
-        SITLRotorControlMessage motor_ctrl_ = { 0 };
+        SITLRotorControlMessage motor_ctrl_;
         float rotor_controls_[kTyFlightControllerRotorControlCount];
 
         const Kinematics::State* kinematics_;
